@@ -77,6 +77,10 @@ Resources:
                   - logs:CreateLogGroup
                   - logs:CreateLogStream
                   - logs:PutLogEvents
+                  - events:PutRule
+                  - events:PutTargets
+                  - events:RemoveTargets
+                  - events:DeleteRule
                 Resource: "*"
 
   EC2MonitoringLambda:
@@ -88,6 +92,7 @@ Resources:
         ZipFile: |
           import json
           import boto3
+          from datetime import datetime, timedelta
 
           def lambda_handler(event, context):
               client = boto3.client('cloudwatch')
@@ -128,6 +133,23 @@ Resources:
                   'body': json.dumps(results)
               }
       Runtime: python3.8
+
+  LambdaSchedule:
+    Type: AWS::Events::Rule
+    Properties:
+      ScheduleExpression: "rate(1 hour)"
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt EC2MonitoringLambda.Arn
+          Id: "EC2MonitoringLambda"
+
+  LambdaInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref EC2MonitoringLambda
+      Action: 'lambda:InvokeFunction'
+      Principal: 'events.amazonaws.com'
+      SourceArn: !GetAtt LambdaSchedule.Arn
 
 Outputs:
   LambdaFunction:
