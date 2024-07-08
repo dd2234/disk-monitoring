@@ -1,54 +1,71 @@
-import boto3
-import os
-from datetime import datetime, timedelta
+AWSTemplateFormatVersion: '2010-09-09'
+Resources:
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties: 
+      AssumeRolePolicyDocument: 
+        Version: '2012-10-17'
+        Statement: 
+          - Effect: Allow
+            Principal: 
+              Service: 
+                - lambda.amazonaws.com
+            Action: 
+              - sts:AssumeRole
+      Path: "/"
+      Policies:
+        - PolicyName: "LambdaExecutionPolicy"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: "arn:aws:logs:*:*:*"
+              - Effect: Allow
+                Action:
+                  - ec2:DescribeInstances
+                  - ec2:DescribeVolumes
+                  - cloudwatch:GetMetricStatistics
+                Resource: "*"
 
-def handler(event, context):
-    ec2 = boto3.client('ec2')
-    cloudwatch = boto3.client('cloudwatch')
-    ec2_instance_ids = os.environ['EC2_INSTANCE_IDS'].split(',')
+  DiskMonitoringFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: monitor.handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Runtime: python3.8
+      Code:
+        S3Bucket: !Ref CodeS3Bucket
+        S3Key: !Ref CodeS3Key
+      Environment:
+        Variables:
+          EC2_INSTANCE_IDS: !Ref Ec2InstanceIds
 
-    for ec2_instance_id in ec2_instance_ids:
-        # 获取实例的磁盘使用情况
-        response = ec2.describe_volumes(Filters=[{'Name': 'attachment.instance-id', 'Values': [ec2_instance_id]}])
-        for volume in response['Volumes']:
-            volume_id = volume['VolumeId']
-            metrics = cloudwatch.get_metric_statistics(
-                Namespace='AWS/EBS',
-                MetricName='VolumeWriteOps',
-                Dimensions=[{'Name': 'VolumeId', 'Value': volume_id}],
-                StartTime=datetime.utcnow() - timedelta(minutes=5),
-                EndTime=datetime.utcnow(),
-                Period=300,
-                Statistics=['Sum']
-            )
-            if metrics['Datapoints']:
-                usage = metrics['Datapoints'][0]['Sum']
-                print(f"Instance {ec2_instance_id} volume {volume_id} usage: {usage}")
+  CloudWatchEventRule:
+    Type: AWS::Events::Rule
+    Properties:
+      ScheduleExpression: "rate(1 hour)"
+      Targets:
+        - Arn: !GetAtt DiskMonitoringFunction.Arn
+          Id: "DiskMonitoringFunction"
 
-        # 获取实例的CPU使用情况
-        cpu_metrics = cloudwatch.get_metric_statistics(
-            Namespace='AWS/EC2',
-            MetricName='CPUUtilization',
-            Dimensions=[{'Name': 'InstanceId', 'Value': ec2_instance_id}],
-            StartTime=datetime.utcnow() - timedelta(minutes=5),
-            EndTime=datetime.utcnow(),
-            Period=300,
-            Statistics=['Average']
-        )
-        if cpu_metrics['Datapoints']:
-            cpu_usage = cpu_metrics['Datapoints'][0]['Average']
-            print(f"Instance {ec2_instance_id} CPU usage: {cpu_usage}%")
+  LambdaInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt DiskMonitoringFunction.Arn
+      Action: "lambda:InvokeFunction"
+      Principal: "events.amazonaws.com"
 
-        # 获取实例的内存使用情况
-        memory_metrics = cloudwatch.get_metric_statistics(
-            Namespace='CWAgent',
-            MetricName='mem_used_percent',
-            Dimensions=[{'Name': 'InstanceId', 'Value': ec2_instance_id}],
-            StartTime=datetime.utcnow() - timedelta(minutes=5),
-            EndTime=datetime.utcnow(),
-            Period=300,
-            Statistics=['Average']
-        )
-        if memory_metrics['Datapoints']:
-            memory_usage = memory_metrics['Datapoints'][0]['Average']
-            print(f"Instance {ec2_instance_id} memory usage: {memory_usage}%")
+Parameters:
+  CodeS3Bucket:
+    Type: String
+    Description: "The name of the S3 bucket containing the Lambda deployment package"
+  CodeS3Key:
+    Type: String
+    Description: "The S3 key of the Lambda deployment package"
+  Ec2InstanceIds:
+    Type: String
+    Description: "Comma-separated list of EC2 instance IDs to monitor"
