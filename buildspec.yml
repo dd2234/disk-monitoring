@@ -1,71 +1,135 @@
 AWSTemplateFormatVersion: '2010-09-09'
+Description: CloudFormation template to monitor EC2 instance metrics and display results via Lambda.
+
+Parameters:
+  InstanceId:
+    Type: String
+    Description: The ID of the EC2 instance to monitor.
+
 Resources:
+  CPUUtilizationAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: "Alarm if CPU utilization exceeds 80%"
+      Namespace: AWS/EC2
+      MetricName: CPUUtilization
+      Dimensions:
+        - Name: InstanceId
+          Value: !Ref InstanceId
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 80
+      ComparisonOperator: GreaterThanThreshold
+      AlarmActions: []
+
+  DiskReadOpsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: "Alarm if DiskReadOps exceeds 1000"
+      Namespace: AWS/EC2
+      MetricName: DiskReadOps
+      Dimensions:
+        - Name: InstanceId
+          Value: !Ref InstanceId
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1000
+      ComparisonOperator: GreaterThanThreshold
+      AlarmActions: []
+
+  MemoryUtilizationAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: "Alarm if Memory utilization exceeds 80%"
+      Namespace: System/Linux
+      MetricName: MemoryUtilization
+      Dimensions:
+        - Name: InstanceId
+          Value: !Ref InstanceId
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 80
+      ComparisonOperator: GreaterThanThreshold
+      AlarmActions: []
+
   LambdaExecutionRole:
     Type: AWS::IAM::Role
-    Properties: 
-      AssumeRolePolicyDocument: 
-        Version: '2012-10-17'
-        Statement: 
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
           - Effect: Allow
-            Principal: 
-              Service: 
-                - lambda.amazonaws.com
-            Action: 
-              - sts:AssumeRole
-      Path: "/"
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
       Policies:
-        - PolicyName: "LambdaExecutionPolicy"
+        - PolicyName: LambdaEC2Policy
           PolicyDocument:
             Version: "2012-10-17"
             Statement:
               - Effect: Allow
                 Action:
+                  - ec2:DescribeInstances
+                  - cloudwatch:GetMetricStatistics
                   - logs:CreateLogGroup
                   - logs:CreateLogStream
                   - logs:PutLogEvents
-                Resource: "arn:aws:logs:*:*:*"
-              - Effect: Allow
-                Action:
-                  - ec2:DescribeInstances
-                  - ec2:DescribeVolumes
-                  - cloudwatch:GetMetricStatistics
                 Resource: "*"
 
-  DiskMonitoringFunction:
+  EC2MonitoringLambda:
     Type: AWS::Lambda::Function
     Properties:
-      Handler: monitor.handler
+      Handler: lambda_function.lambda_handler
       Role: !GetAtt LambdaExecutionRole.Arn
-      Runtime: python3.8
       Code:
-        S3Bucket: !Ref CodeS3Bucket
-        S3Key: !Ref CodeS3Key
-      Environment:
-        Variables:
-          EC2_INSTANCE_IDS: !Ref Ec2InstanceIds
+        ZipFile: |
+          import json
+          import boto3
 
-  CloudWatchEventRule:
-    Type: AWS::Events::Rule
-    Properties:
-      ScheduleExpression: "rate(1 hour)"
-      Targets:
-        - Arn: !GetAtt DiskMonitoringFunction.Arn
-          Id: "DiskMonitoringFunction"
+          def lambda_handler(event, context):
+              client = boto3.client('cloudwatch')
+              
+              # Metrics to fetch
+              metrics = [
+                  {'MetricName': 'CPUUtilization', 'Namespace': 'AWS/EC2'},
+                  {'MetricName': 'DiskReadOps', 'Namespace': 'AWS/EC2'},
+                  {'MetricName': 'MemoryUtilization', 'Namespace': 'System/Linux'}
+              ]
+              
+              instance_id = event.get('InstanceId', 'i-1234567890abcdef0')
+              
+              results = {}
+              
+              for metric in metrics:
+                  response = client.get_metric_statistics(
+                      Namespace=metric['Namespace'],
+                      MetricName=metric['MetricName'],
+                      Dimensions=[
+                          {
+                              'Name': 'InstanceId',
+                              'Value': instance_id
+                          },
+                      ],
+                      StartTime=datetime.utcnow() - timedelta(minutes=10),
+                      EndTime=datetime.utcnow(),
+                      Period=300,
+                      Statistics=['Average']
+                  )
+                  if response['Datapoints']:
+                      results[metric['MetricName']] = response['Datapoints'][0]['Average']
+                  else:
+                      results[metric['MetricName']] = 'No data'
 
-  LambdaInvokePermission:
-    Type: AWS::Lambda::Permission
-    Properties:
-      FunctionName: !GetAtt DiskMonitoringFunction.Arn
-      Action: "lambda:InvokeFunction"
-      Principal: "events.amazonaws.com"
+              return {
+                  'statusCode': 200,
+                  'body': json.dumps(results)
+              }
+      Runtime: python3.8
 
-Parameters:
-  CodeS3Bucket:
-    Type: String
-    Description: "The name of the S3 bucket containing the Lambda deployment package"
-  CodeS3Key:
-    Type: String
-    Description: "The S3 key of the Lambda deployment package"
-  Ec2InstanceIds:
-    Type: String
-    Description: "Comma-separated list of EC2 instance IDs to monitor"
+Outputs:
+  LambdaFunction:
+    Description: "The Lambda function ARN"
+    Value: !GetAtt EC2MonitoringLambda.Arn
