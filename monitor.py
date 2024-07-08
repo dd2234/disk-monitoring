@@ -52,4 +52,3 @@ def handler(event, context):
         if memory_metrics['Datapoints']:
             memory_usage = memory_metrics['Datapoints'][0]['Average']
             print(f"Instance {ec2_instance_id} memory usage: {memory_usage}%")
-
