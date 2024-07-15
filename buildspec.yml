@@ -44,6 +44,7 @@ Resources:
                   - 'ec2:StopInstances'
                   - 'sns:Publish'
                   - 'ses:SendEmail'
+                  - 'pricing:GetProducts'
                 Resource: '*'
 
   SNSTopic:
